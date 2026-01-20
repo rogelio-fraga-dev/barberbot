@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: barberbot-assist
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5432/barberbot_db
+    username: barberbot_user
+    password: barberbot_pass
+    driver-class-name: org.postgresql.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+server:
+  port: 8081
+
+# Configurações do Bot
+barberbot:
+  admin:
+    phone: "34984141504" # Número do Luiz (formato sem caracteres especiais)
+  evolution:
+    base-url: "http://localhost:8080"
+    instance-name: "BarberBot"
+    api-key: "${EVOLUTION_API_KEY:}" # Opcional, se a Evolution API exigir
+  openai:
+    api-key: "${OPENAI_API_KEY}" # OBRIGATÓRIO - Definir como variável de ambiente
+    model: "gpt-4o"
+    vision-model: "gpt-4o"
+    whisper-model: "whisper-1"
+    temperature: 0.7
+  schedule:
+    delay-minutes: 60 # Delay para envio de avaliação após o corte
+    batch-size: 1 # Mensagens por lote (para evitar spam)
+    delay-between-messages: 60000 # 60 segundos entre mensagens
+
+# Logging
+logging:
+  level:
+    com.barberbot: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
