@@ -53,4 +53,11 @@ public class WhatsAppService {
             }
         });
     }
+
+    /**
+     * Envia o menu de opções em texto (1 a 6). Cliente pode digitar o número ou o nome da opção.
+     */
+    public void sendMenuList(String phone) {
+        sendTextMessage(phone, MenuOptions.getMenuAsText());
+    }
 }

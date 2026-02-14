@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Slf4j
-@Component
+@Component("barberBotTaskScheduler") // evita conflito com bean auto-configurado 'taskScheduler' do Spring Boot
 @RequiredArgsConstructor
 public class TaskScheduler {
     

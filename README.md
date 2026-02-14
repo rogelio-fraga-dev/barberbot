@@ -62,6 +62,9 @@ Funciona como um funcionário virtual para gestão:
    - Configure o webhook para: `http://host.docker.internal:8081/api/webhook`
    - Escaneie o QR Code com WhatsApp
 
+6. **Testes (recomendado)**  
+   Use um **número de WhatsApp que não tenha grupos ou muitos contatos** para testar (ex.: chip novo ou segundo número). O bot responde **apenas em chat privado** (1:1); mensagens em grupos são ignoradas. Evita spam em grupos caso algo seja configurado errado.
+
 ## 📁 Estrutura do Projeto
 
 ```

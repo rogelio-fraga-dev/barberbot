@@ -34,8 +34,10 @@ public class OpenAIService {
             💈 Produtos (Fotos e Valores)
             📅 Agendar Horário (Envia Link Externo)
             🗣️ Falar com Atendente (Para o robô e chama o Luiz)
+            📸 Instagram (nos siga nas redes)
             
             Quando o cliente pedir algo específico do menu, responda adequadamente.
+            Pode sugerir "Ver opções" ou "menu" para o cliente abrir o menu com botões.
             """;
     
     private static final String SYSTEM_PROMPT_AGENDA_READER = """

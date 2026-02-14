@@ -14,8 +14,11 @@ public class WebClientConfig {
     
     @Bean
     public WebClient webClient() {
+        String apiKey = properties.getEvolution().getApiKey();
         return WebClient.builder()
                 .baseUrl(properties.getEvolution().getBaseUrl())
+                .defaultHeader("apikey", apiKey != null && !apiKey.isEmpty() ? apiKey : "barberbot")
+                .defaultHeader("Content-Type", "application/json")
                 .build();
     }
     

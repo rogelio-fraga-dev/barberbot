@@ -38,6 +38,12 @@ public class OrchestratorService {
             log.debug("Ignorando mensagem enviada pelo próprio bot");
             return;
         }
+
+        // Ignora mensagens em grupos (só atendemos chat 1:1 com o número da barbearia)
+        if (webhook.isGroupChat()) {
+            log.debug("Ignorando mensagem de grupo (bot só responde em chat privado)");
+            return;
+        }
         
         String phoneNumber = webhook.getPhoneNumber();
         if (phoneNumber == null || phoneNumber.isEmpty()) {
@@ -58,14 +64,22 @@ public class OrchestratorService {
     }
     
     /**
-     * Verifica se o número pertence ao admin
+     * Verifica se o número pertence ao admin.
+     * Aceita admin configurado com ou sem código do país (55);
+     * a Evolution envia o número completo (ex: 5534984141504).
      */
     private boolean isAdminNumber(String phoneNumber) {
         String adminPhone = properties.getAdmin().getPhone();
-        // Remove caracteres especiais para comparação
-        String normalizedPhone = phoneNumber.replaceAll("[^0-9]", "");
+        String normalizedPhone = phoneNumber != null ? phoneNumber.replaceAll("[^0-9]", "") : "";
         String normalizedAdmin = adminPhone != null ? adminPhone.replaceAll("[^0-9]", "") : "";
-        return normalizedPhone.equals(normalizedAdmin);
+        if (normalizedAdmin.isEmpty()) return false;
+        // Exato (ex: 34984141504 == 34984141504)
+        if (normalizedPhone.equals(normalizedAdmin)) return true;
+        // Com código do Brasil: 55 + admin (ex: 5534984141504)
+        if (normalizedPhone.equals("55" + normalizedAdmin)) return true;
+        // Admin 11 dígitos (DDD+numero): aceita se o webhook mandar só os 11 no final
+        if (normalizedAdmin.length() == 11 && normalizedPhone.endsWith(normalizedAdmin)) return true;
+        return false;
     }
     
     /**
@@ -135,39 +149,72 @@ public class OrchestratorService {
         String phoneNumber = webhook.getPhoneNumber();
         String messageText = webhook.getMessageText();
         String pushName = webhook.getData() != null ? webhook.getData().getPushName() : null;
-        
+        String contentToSave = messageText != null ? messageText : "[Mensagem sem texto]";
+
         log.info("Mensagem recebida do cliente {}: {}", phoneNumber, messageText);
-        
+
         // Busca ou cria cliente
         Customer customer = customerService.findOrCreateCustomer(phoneNumber, pushName);
-        
+
         // Salva a mensagem do cliente no histórico
         Interaction userInteraction = Interaction.builder()
                 .customer(customer)
                 .type(Interaction.InteractionType.USER)
-                .content(messageText != null ? messageText : "[Mensagem sem texto]")
-                .messageId(webhook.getData() != null && webhook.getData().getKey() != null ? 
-                          webhook.getData().getKey().getId() : null)
+                .content(contentToSave)
+                .messageId(webhook.getData() != null && webhook.getData().getKey() != null ?
+                        webhook.getData().getKey().getId() : null)
                 .build();
         interactionRepository.save(userInteraction);
-        
-        // Processa a mensagem com IA
+
+        // 1) Cliente escolheu opção do menu (lista ou digitação 1-6) -> resposta pré-definida + menu de novo
+        String menuOptionId = MenuOptions.resolveMenuOptionId(contentToSave);
+        if (menuOptionId != null) {
+            String response = MenuOptions.getResponseForOption(menuOptionId, properties);
+            Interaction botInteraction = Interaction.builder()
+                    .customer(customer)
+                    .type(Interaction.InteractionType.BOT)
+                    .content(response)
+                    .build();
+            interactionRepository.save(botInteraction);
+            whatsAppService.sendTextMessage(phoneNumber, response);
+            whatsAppService.sendMenuList(phoneNumber);
+            return;
+        }
+
+        // 2) Cliente pediu para ver o menu -> envia lista interativa (clicável)
+        if (MenuOptions.isAskingForMenu(contentToSave)) {
+            String shortText = "Aqui estão nossas opções:";
+            Interaction botInteraction = Interaction.builder()
+                    .customer(customer)
+                    .type(Interaction.InteractionType.BOT)
+                    .content(shortText + " [menu interativo enviado]")
+                    .build();
+            interactionRepository.save(botInteraction);
+            whatsAppService.sendTextMessage(phoneNumber, shortText);
+            whatsAppService.sendMenuList(phoneNumber);
+            return;
+        }
+
+        // 3) Resposta da IA
         List<String> recentHistory = getRecentHistory(customer.getId());
         String aiResponse = openAIService.processCustomerMessage(
-            messageText != null ? messageText : "Olá", 
-            recentHistory
+                messageText != null ? messageText : "Olá",
+                recentHistory
         );
-        
-        // Salva a resposta do bot
+
         Interaction botInteraction = Interaction.builder()
                 .customer(customer)
                 .type(Interaction.InteractionType.BOT)
                 .content(aiResponse)
                 .build();
         interactionRepository.save(botInteraction);
-        
-        // Envia a resposta
+
         whatsAppService.sendTextMessage(phoneNumber, aiResponse);
+
+        // Se a IA sugeriu o menu, envia a lista interativa para o cliente poder tocar
+        if (aiResponse != null && (aiResponse.toLowerCase().contains("menu") || aiResponse.contains("opções") || aiResponse.contains("opcoes"))) {
+            whatsAppService.sendMenuList(phoneNumber);
+        }
     }
     
     /**

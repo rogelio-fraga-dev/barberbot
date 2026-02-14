@@ -57,22 +57,15 @@
 ### 🔴 ALTA PRIORIDADE - Antes de Testar
 
 #### 1. Configuração de API Key da OpenAI
-- [ ] **OBRIGATÓRIO**: Definir variável de ambiente `OPENAI_API_KEY`
-  ```powershell
-  # Windows PowerShell
-  $env:OPENAI_API_KEY="sk-..."
-  
-  # Linux/Mac
-  export OPENAI_API_KEY="sk-..."
-  ```
+- [x] Definir variável de ambiente `OPENAI_API_KEY` (via `.env` ou `run.ps1`)
 - [ ] Testar se a API Key está válida e funcionando
 
 #### 2. Configuração da Evolution API
-- [ ] Após iniciar Docker Compose, acessar http://localhost:8080
-- [ ] Criar instância do WhatsApp
-- [ ] Configurar nome da instância como "BarberBot" (conforme application.yml)
-- [ ] Verificar se o webhook está apontando para: `http://host.docker.internal:8081/api/webhook`
-- [ ] Escanear QR Code com WhatsApp
+- [x] Docker Compose rodando (PostgreSQL + Evolution API)
+- [x] Acessar http://localhost:8080/manager (API Key: `barberbot`)
+- [ ] Criar instância do WhatsApp no manager (nome sugerido: BarberBot)
+- [ ] Escanear QR Code com WhatsApp na instância criada
+- [ ] Verificar webhook global: `http://host.docker.internal:8081/api/webhook` (já no docker-compose)
 - [ ] Testar se está recebendo webhooks corretamente
 
 #### 3. Implementações Incompletas no Código
@@ -98,16 +91,16 @@
 
 ## 🟡 Pendências Importantes (Melhorias)
 
+### Menu (feito)
+- [x] **Menu em texto** – opções 1 a 6 + Instagram; cliente digita número ou nome da opção (lista interativa deixada de lado)
+- [x] **Configuração em `application.yml`** – `barberbot.menu` (endereço, serviços, link agendamento, Instagram)
+
 ### Configuração de Conteúdo
-- [ ] **Criar mensagens padrão do menu**
-  - Texto de boas-vindas
-  - Menu completo formatado
-  - Respostas padrão para cada item do menu
-  
-- [ ] **Configurar links reais**
+- [x] Respostas padrão por item do menu (via `barberbot.menu` no yml)
+- [ ] **Configurar links reais** em `application.yml` (barberbot.menu)
   - Link do Google Maps da barbearia
   - Link do sistema de agendamento
-  - Link de avaliação do Google
+  - Link do Instagram
   
 - [ ] **Criar tabela de preços**
   - Adicionar preços reais dos serviços
@@ -135,9 +128,30 @@
 
 ---
 
+## 📋 Planejado: Excel CashBarber e Novos Clientes
+
+### Lista de contatos do CashBarber (Excel)
+- [ ] **Importar Excel com todos os contatos** do aplicativo CashBarber do Luiz
+  - Objetivo: evitar conflito entre “nome no agendamento” e “nome/contato salvo” – ao cruzar por **telefone**, o bot usa o mesmo cadastro (nome do CashBarber) para lembretes e mensagens do dia
+  - Fluxo sugerido: endpoint (ex.: POST `/api/admin/import-contacts`) que recebe o Excel; ler colunas (telefone, nome); criar/atualizar `customers` por telefone; assim, agendamentos do dia e mensagens usam o mesmo cliente
+- [ ] **Formato do Excel**: definir colunas (ex.: `telefone`, `nome`) e documentar para o Luiz exportar do CashBarber no formato esperado
+
+### Prospecção – novos clientes
+- [ ] **Enviar mensagem para pessoas sem cadastro** (conhecer a barbearia)
+  - Ex.: lista de números (ou Excel) de leads; o bot envia uma mensagem de apresentação + link do Instagram / agendamento
+  - Pode ser um comando do admin: “disparo prospecção” + upload de Excel ou lista, ou uso da mesma planilha de contatos marcando “não cliente” para envio único
+
+---
+
 ## 🟢 Pendências Opcionais (Futuras Melhorias)
 
 ### Funcionalidades Avançadas
+- [ ] **Lembrete de Agendamento** - Enviar mensagem 1 hora antes do horário marcado
+  - Modificar `AgendaService.processAgenda()` para criar 2 tarefas por agendamento:
+    1. Tarefa de LEMBRETE (1 hora antes do horário) - taskType: "APPOINTMENT_REMINDER"
+    2. Tarefa de AVALIAÇÃO (1 hora depois do horário) - taskType: "REVIEW_REQUEST"
+  - Mensagem de lembrete: "Olá {nome}! Lembramos que você tem um agendamento hoje às {horário}. Esperamos você!"
+  - Arquivo: `src/main/java/com/barberbot/api/service/AgendaService.java`
 - [ ] Dashboard administrativo web
 - [ ] Métricas e analytics de conversas
 - [ ] Suporte para múltiplas instâncias/contas WhatsApp
@@ -201,5 +215,5 @@
 
 ---
 
-**Última atualização**: 19/01/2025
-**Status Geral**: ✅ Estrutura Base Completa | ⚠️ Pendências Críticas para Funcionamento
+**Última atualização**: 27/01/2026
+**Status Geral**: ✅ Estrutura Base Completa | ✅ Evolution API configurada (API Key: barberbot) | ⚠️ Próximo: criar instância WhatsApp e rodar aplicação

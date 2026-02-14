@@ -28,11 +28,13 @@ server:
 # Configurações do Bot
 barberbot:
   admin:
-    phone: "34984141504" # Número do Luiz (formato sem caracteres especiais)
+    # Número do admin (quem ENVIA mensagens para o bot). Pode ser com ou sem 55.
+    # Não é o número do WhatsApp conectado ao Evolution (esse é o "bot").
+    phone: "34984141504"
   evolution:
     base-url: "http://localhost:8080"
     instance-name: "BarberBot"
-    api-key: "${EVOLUTION_API_KEY:}" # Opcional, se a Evolution API exigir
+    api-key: "${EVOLUTION_API_KEY:barberbot}" # API Key da Evolution API
   openai:
     api-key: "${OPENAI_API_KEY}" # OBRIGATÓRIO - Definir como variável de ambiente
     model: "gpt-4o"
@@ -43,11 +45,20 @@ barberbot:
     delay-minutes: 60 # Delay para envio de avaliação após o corte
     batch-size: 1 # Mensagens por lote (para evitar spam)
     delay-between-messages: 60000 # 60 segundos entre mensagens
+  # Menu interativo (opcional): textos e links que aparecem ao tocar nas opções
+  menu:
+    address-text: "📍 Rua Exemplo, 123 - Centro"
+    address-maps-url: "https://maps.google.com/..."
+    services-text: "💰 Corte R$ 40 | Barba R$ 25 | Combo R$ 60"
+    schedule-url: "https://sua-plataforma.com/agendar"
+    instagram-url: "https://instagram.com/sua_barbearia"
 
-# Logging
+# Logging - níveis mais limpos (menos spam)
 logging:
   level:
-    com.barberbot: DEBUG
-    org.springframework.web: INFO
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    root: WARN
+    com.barberbot: INFO
+    org.springframework.web: WARN
+    org.springframework.web.reactive: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql: WARN

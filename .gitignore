@@ -46,6 +46,9 @@ application-dev.yml
 .env
 .env.local
 
+# QR Code gerado pelo webhook (nao versionar)
+qrcode-evolution.png
+
 # OS
 .DS_Store
 Thumbs.db
