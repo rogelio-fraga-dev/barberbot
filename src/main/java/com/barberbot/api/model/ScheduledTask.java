@@ -10,51 +10,55 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "scheduled_tasks")
-@Data
+@Data // O Lombok gera o setUpdatedAt automaticamente por causa deste campo
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ScheduledTask {
+    
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
     
-    @Column(name = "customer_phone", nullable = false, length = 20)
+    @Column(name = "customer_phone", nullable = false)
     private String customerPhone;
     
     @Column(name = "execution_time", nullable = false)
     private LocalDateTime executionTime;
     
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
-    @Builder.Default
-    private TaskStatus status = TaskStatus.PENDING;
+    @Column(name = "task_type", nullable = false)
+    private String taskType; // Ex: REMINDER, REVIEW_REQUEST
     
-    @Column(name = "task_type", nullable = false, length = 50)
-    @Builder.Default
-    private String taskType = "REVIEW_REQUEST";
-    
-    @Column(name = "message_content", columnDefinition = "TEXT")
+    @Column(name = "message_content", length = 1000)
     private String messageContent;
     
-    @Column(name = "attempts")
-    @Builder.Default
-    private Integer attempts = 0;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false)
+    private TaskStatus status;
     
+    // --- CAMPOS QUE FALTAVAM ---
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
     
-    @Column(name = "completed_at")
-    private LocalDateTime completedAt;
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
     
     @PrePersist
     protected void onCreate() {
-        if (createdAt == null) {
-            createdAt = LocalDateTime.now();
-        }
+        createdAt = LocalDateTime.now();
+        updatedAt = LocalDateTime.now();
     }
     
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+    // ---------------------------
+    
     public enum TaskStatus {
-        PENDING, COMPLETED, FAILED
+        PENDING,
+        COMPLETED,
+        FAILED,
+        CANCELLED
     }
 }

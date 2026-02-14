@@ -1,14 +1,23 @@
 package com.barberbot.api.service;
 
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
+import com.barberbot.api.config.BarberBotProperties;
+import dev.langchain4j.data.message.*;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 @Slf4j
@@ -17,147 +26,179 @@ import java.util.List;
 public class OpenAIService {
     
     private final OpenAiChatModel chatModel;
-    
+    private final BarberBotProperties properties;
+    private WebClient openAiWebClient;
+
     private static final String SYSTEM_PROMPT_RECEPTIONIST = """
-            Você é uma recepcionista profissional e formal de uma barbearia.
-            Seu nome é BarberBot Assist.
+            Você é o assistente virtual oficial da **LH Barbearia** em Araguari, MG.
+            Seu objetivo é ser cordial, ágil e refletir a frase: "Corte novo, autoestima renovada!".
             
-            Regras de atendimento:
-            1. Seja sempre educada, profissional e prestativa
-            2. Mantenha respostas objetivas e úteis
-            3. Se não souber algo, ofereça transferir para o atendente humano
-            4. Sempre que relevante, ofereça o menu de opções
+            📋 **Informações da Barbearia:**
+            - **Endereço:** R. Floriano Peixoto, 585 - Miranda, Araguari.
+            - **Horário de Funcionamento:** Segunda a Sábado, das 09:00 às 20:00.
+            - **Almoço:** Fechado das 12:00 às 14:00.
+            - **Seu Horário (Bot):** Você atende 24 horas por dia para tirar dúvidas e mandar links.
             
-            Menu disponível:
-            📍 Endereço (Texto + Google Maps)
-            💰 Serviços e Tabela de Preços
-            💈 Produtos (Fotos e Valores)
-            📅 Agendar Horário (Envia Link Externo)
-            🗣️ Falar com Atendente (Para o robô e chama o Luiz)
-            📸 Instagram (nos siga nas redes)
+            ⚙️ **Regras de Atendimento:**
+            1. Seja breve. Respostas curtas funcionam melhor no WhatsApp.
+            2. Se o cliente quiser agendar, SEMPRE mande o link do CashBarber ou peça para digitar "4".
+            3. Se perguntarem preço, dê um exemplo (ex: Corte a partir de R$35) e peça para digitar "2" para ver a tabela completa com Planos VIP.
+            4. Se for algo complexo que você não sabe, peça para digitar "5" (Falar com Luiz).
+            5. Nunca invente preços que não estão na sua base.
             
-            Quando o cliente pedir algo específico do menu, responda adequadamente.
-            Pode sugerir "Ver opções" ou "menu" para o cliente abrir o menu com botões.
+            💬 **Estilo de Fala:**
+            Profissional mas acessível. Use emojis com moderação (✂️, 💈, 🔥).
+            
+            Opções do Menu (sugira se o cliente estiver perdido):
+            1. Endereço
+            2. Preços/Serviços
+            3. Produtos
+            4. Agendar
+            5. Falar com Luiz
+            6. Instagram
             """;
     
     private static final String SYSTEM_PROMPT_AGENDA_READER = """
-            Você é um assistente especializado em extrair informações de imagens de agendas e planilhas.
+            Você é um assistente especializado em ler prints de sistemas de agendamento (CashBarber).
             
-            Sua tarefa é analisar a imagem fornecida e extrair:
-            - Horários de atendimento
-            - Nomes dos clientes
-            - Números de telefone (apenas números, sem espaços ou caracteres especiais)
-            - Tipo de serviço (se disponível)
-            
-            Retorne APENAS um JSON válido no seguinte formato:
+            Sua tarefa: Analisar a imagem e extrair os agendamentos.
+            Retorne APENAS um JSON válido (sem markdown, sem ```json) no formato:
             {
               "items": [
                 {
                   "name": "Nome do Cliente",
-                  "phone": "34984141504",
+                  "phone": "5534999999999",
                   "time": "14:30",
                   "service": "Corte"
                 }
               ]
             }
             
-            IMPORTANTE:
-            - Se não conseguir identificar claramente um dado, não invente
-            - Telefones devem ter apenas dígitos (ex: 34984141504)
-            - Horários devem estar no formato HH:mm (24 horas)
+            Regras Críticas:
+            1. Extraia o telefone apenas com números. Se não tiver DDI (55), adicione se for Brasil.
+            2. Se o telefone não estiver visível, deixe vazio ou tente inferir.
+            3. Horário deve ser HH:mm.
             """;
     
     /**
-     * Processa uma mensagem do cliente e gera uma resposta usando IA
+     * Chat com Cliente (Texto)
      */
     public String processCustomerMessage(String userMessage, List<String> recentHistory) {
         try {
-            List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
-            
-            // Adiciona o prompt do sistema
+            List<ChatMessage> messages = new ArrayList<>();
             messages.add(SystemMessage.from(SYSTEM_PROMPT_RECEPTIONIST));
             
-            // Adiciona histórico recente (últimas 5 mensagens)
-            if (recentHistory != null && !recentHistory.isEmpty()) {
-                int historySize = Math.min(5, recentHistory.size());
-                for (int i = Math.max(0, recentHistory.size() - historySize); i < recentHistory.size(); i++) {
-                    // Alterna entre USER e AI (simplificado)
-                    if (i % 2 == 0) {
-                        messages.add(UserMessage.from(recentHistory.get(i)));
-                    } else {
-                        messages.add(AiMessage.from(recentHistory.get(i)));
-                    }
+            if (recentHistory != null) {
+                for (int i = 0; i < recentHistory.size(); i++) {
+                    if (i % 2 == 0) messages.add(UserMessage.from(recentHistory.get(i)));
+                    else messages.add(AiMessage.from(recentHistory.get(i)));
                 }
             }
             
-            // Adiciona a mensagem atual
             messages.add(UserMessage.from(userMessage));
-            
-            // Gera resposta
-            AiMessage response = chatModel.generate(messages).content();
-            
-            log.info("Resposta gerada pela IA para mensagem: {}", userMessage.substring(0, Math.min(50, userMessage.length())));
-            return response.text();
+            return chatModel.generate(messages).content().text();
             
         } catch (Exception e) {
-            log.error("Erro ao processar mensagem com IA: {}", e.getMessage(), e);
-            return "Desculpe, ocorreu um erro ao processar sua mensagem. Por favor, tente novamente ou peça para falar com um atendente.";
+            log.error("Erro no Chat IA: {}", e.getMessage(), e);
+            return "Desculpe, estou terminando um corte aqui! Pode tentar novamente em instantes?";
         }
     }
     
     /**
-     * Lê uma imagem de agenda e extrai informações estruturadas
+     * Visão Computacional: Ler Agenda
      */
     public String extractAgendaFromImage(String imageUrl) {
         try {
-            log.info("Processando imagem de agenda: {}", imageUrl);
+            log.info("Baixando imagem da agenda: {}", imageUrl);
+            String base64Image = downloadUrlAsBase64(imageUrl);
             
-            // Usa o modelo de visão para analisar a imagem
-            // Nota: LangChain4j ainda não tem suporte direto para Vision no momento desta versão
-            // Pode ser necessário usar a API do OpenAI diretamente ou atualizar a biblioteca
+            UserMessage userMessage = UserMessage.from(
+                TextContent.from("Analise esta imagem e extraia os agendamentos em JSON."),
+                ImageContent.from(base64Image, "image/jpeg")
+            );
             
-            String prompt = "Analise esta imagem de agenda e extraia os horários, nomes e telefones. " +
-                          "Retorne apenas JSON válido conforme especificado no prompt do sistema.";
+            SystemMessage systemMessage = SystemMessage.from(SYSTEM_PROMPT_AGENDA_READER);
             
-            // TODO: Implementar chamada para Vision API quando disponível no LangChain4j
-            // Por enquanto, retorna um placeholder
-            log.warn("Vision API ainda não implementada completamente. Usando placeholder.");
+            log.info("Enviando imagem para GPT-4o Vision...");
+            String response = chatModel.generate(systemMessage, userMessage).content().text();
             
-            return """
-                {
-                  "items": [
-                    {
-                      "name": "Cliente Exemplo",
-                      "phone": "34984141504",
-                      "time": "14:30",
-                      "service": "Corte"
-                    }
-                  ]
-                }
-                """;
+            return response.replace("```json", "").replace("```", "").trim();
                 
         } catch (Exception e) {
             log.error("Erro ao processar imagem de agenda: {}", e.getMessage(), e);
-            throw new RuntimeException("Erro ao processar imagem de agenda", e);
+            throw new RuntimeException("Falha ao ler imagem da agenda. Verifique se está legível.", e);
         }
     }
     
     /**
-     * Transcreve um áudio usando Whisper
+     * Audição: Transcrever Áudio (Whisper via HTTP Raw)
      */
     public String transcribeAudio(String audioUrl) {
         try {
-            log.info("Transcrevendo áudio: {}", audioUrl);
+            log.info("Baixando áudio para transcrição: {}", audioUrl);
+            byte[] audioBytes = downloadUrlBytes(audioUrl);
             
-            // TODO: Implementar transcrição usando Whisper API
-            // LangChain4j pode não ter suporte direto, pode ser necessário chamar API diretamente
+            log.info("Enviando áudio ({} bytes) para Whisper API...", audioBytes.length);
             
-            log.warn("Transcrição de áudio ainda não implementada completamente.");
-            return "Áudio transcrito (placeholder)";
+            MultipartBodyBuilder builder = new MultipartBodyBuilder();
+            builder.part("file", new ByteArrayResource(audioBytes) {
+                @Override
+                public String getFilename() {
+                    return "audio.mp3";
+                }
+            });
+            builder.part("model", "whisper-1");
+
+            String jsonResponse = getOpenAiWebClient()
+                    .post()
+                    .uri("/audio/transcriptions")
+                    .contentType(MediaType.MULTIPART_FORM_DATA)
+                    .bodyValue(builder.build())
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
             
+            if (jsonResponse != null && jsonResponse.contains("\"text\":")) {
+                int start = jsonResponse.indexOf("\"text\":") + 8;
+                String text = jsonResponse.substring(start);
+                text = text.substring(0, text.lastIndexOf("\""));
+                if (text.startsWith("\"")) text = text.substring(1);
+                return text.replace("\\n", "\n").replace("\\\"", "\"");
+            }
+            
+            return jsonResponse;
+
         } catch (Exception e) {
             log.error("Erro ao transcrever áudio: {}", e.getMessage(), e);
-            throw new RuntimeException("Erro ao transcrever áudio", e);
+            return "[Erro ao ouvir áudio]";
+        }
+    }
+
+    private WebClient getOpenAiWebClient() {
+        if (openAiWebClient == null) {
+            openAiWebClient = WebClient.builder()
+                    .baseUrl("[https://api.openai.com/v1](https://api.openai.com/v1)")
+                    .defaultHeader("Authorization", "Bearer " + properties.getOpenai().getApiKey())
+                    .build();
+        }
+        return openAiWebClient;
+    }
+    
+    private String downloadUrlAsBase64(String urlString) throws IOException {
+        byte[] bytes = downloadUrlBytes(urlString);
+        return Base64.getEncoder().encodeToString(bytes);
+    }
+    
+    private byte[] downloadUrlBytes(String urlString) throws IOException {
+        URL url = new URL(urlString);
+        try (InputStream in = new BufferedInputStream(url.openStream());
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int n;
+            while (-1 != (n = in.read(buffer))) {
+                out.write(buffer, 0, n);
+            }
+            return out.toByteArray();
         }
     }
 }

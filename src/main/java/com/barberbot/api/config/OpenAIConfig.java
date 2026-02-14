@@ -5,6 +5,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
+
 @Configuration
 @RequiredArgsConstructor
 public class OpenAIConfig {
@@ -15,11 +17,9 @@ public class OpenAIConfig {
     public OpenAiChatModel openAiChatModel() {
         return OpenAiChatModel.builder()
                 .apiKey(properties.getOpenai().getApiKey())
-                .modelName(properties.getOpenai().getModel())
+                .modelName(properties.getOpenai().getModel()) // gpt-4o
                 .temperature(properties.getOpenai().getTemperature())
+                .timeout(Duration.ofSeconds(60)) // Aumentar timeout para imagens
                 .build();
     }
-    
-    // TODO: Implementar Vision Model quando disponível na versão do LangChain4j
-    // Por enquanto, usar chamadas diretas à API OpenAI para visão
 }

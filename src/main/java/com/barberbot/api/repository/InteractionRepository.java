@@ -11,6 +11,9 @@ import java.util.UUID;
 
 @Repository
 public interface InteractionRepository extends JpaRepository<Interaction, UUID> {
+
+    boolean existsByMessageId(String messageId);
+    
     List<Interaction> findByCustomerIdOrderByTimestampDesc(UUID customerId);
     
     @Query("SELECT i FROM Interaction i WHERE i.customer.id = :customerId ORDER BY i.timestamp DESC")

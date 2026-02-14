@@ -17,122 +17,118 @@ import java.util.Map;
 @Component
 @RequiredArgsConstructor
 public class EvolutionClient {
-    
-    private final BarberBotProperties properties;
+
     private final WebClient webClient;
-    
+    private final BarberBotProperties properties;
+
     /**
-     * Envia uma mensagem de texto via Evolution API
+     * Envia mensagem de texto simples
      */
-    public Mono<String> sendTextMessage(String phone, String message) {
-        String url = String.format("/message/sendText/%s", properties.getEvolution().getInstanceName());
-        
+    public Mono<String> sendTextMessage(String phone, String text) {
         Map<String, Object> body = new HashMap<>();
-        body.put("number", phone);
-        body.put("text", message);
-        
-        log.info("Enviando mensagem para {} via Evolution API", phone);
-        
+        body.put("number", formatPhone(phone));
+        body.put("text", text);
+        body.put("delay", 1200);
+        body.put("linkPreview", true);
+
         return webClient.post()
-                .uri(url)
+                .uri(uriBuilder -> uriBuilder
+                        .path("/message/sendText/{instance}")
+                        .build(properties.getEvolution().getInstanceName()))
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("apikey", properties.getEvolution().getApiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .doOnSuccess(response -> log.info("Mensagem enviada com sucesso para {}", phone))
-                .doOnError(error -> log.error("Erro ao enviar mensagem para {}: {}", phone, error.getMessage()));
+                .doOnError(e -> log.error("Erro ao enviar texto para {}: {}", phone, e.getMessage()));
     }
-    
+
     /**
-     * Envia uma imagem via Evolution API
+     * Envia imagem com legenda
      */
     public Mono<String> sendImageMessage(String phone, String imageUrl, String caption) {
-        String url = String.format("/message/sendMedia/%s", properties.getEvolution().getInstanceName());
-        
         Map<String, Object> body = new HashMap<>();
-        body.put("number", phone);
-        body.put("mediaUrl", imageUrl);
-        body.put("caption", caption != null ? caption : "");
-        body.put("fileName", "image.jpg");
-        
-        log.info("Enviando imagem para {} via Evolution API", phone);
-        
+        body.put("number", formatPhone(phone));
+        body.put("media", imageUrl);
+        body.put("mediatype", "image");
+        body.put("caption", caption);
+        body.put("delay", 1200);
+
         return webClient.post()
-                .uri(url)
+                .uri(uriBuilder -> uriBuilder
+                        .path("/message/sendMedia/{instance}")
+                        .build(properties.getEvolution().getInstanceName()))
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("apikey", properties.getEvolution().getApiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .doOnSuccess(response -> log.info("Imagem enviada com sucesso para {}", phone))
-                .doOnError(error -> log.error("Erro ao enviar imagem para {}: {}", phone, error.getMessage()));
+                .doOnError(e -> log.error("Erro ao enviar imagem para {}: {}", phone, e.getMessage()));
     }
-    
+
     /**
-     * Envia uma mensagem genérica (texto ou mídia)
+     * Envia DTO genérico (usado internamente se necessário)
      */
     public Mono<String> sendMessage(MessageDTO messageDTO) {
-        if (messageDTO.getMediaUrl() != null && !messageDTO.getMediaUrl().isEmpty()) {
-            return sendImageMessage(messageDTO.getPhone(), messageDTO.getMediaUrl(), messageDTO.getMessage());
-        } else {
-            return sendTextMessage(messageDTO.getPhone(), messageDTO.getMessage());
-        }
+        return sendTextMessage(messageDTO.getNumber(), messageDTO.getText());
     }
 
     /**
-     * Envia uma lista interativa (menu clicável) via Evolution API.
-     * POST /message/sendList/{instance}
-     * Quando o usuário toca em uma opção, o WhatsApp envia o rowId como mensagem.
-     * Em caso de 400 (formato não suportado pela versão da API), use fallback com menu em texto.
+     * Envia LISTA INTERATIVA (Botões de Menu)
+     * Este é o método novo que o WhatsAppService está chamando.
      */
-    public Mono<String> sendListMessage(String phone, String title, String description,
-                                        String buttonText, String footerText,
+    public Mono<String> sendListMessage(String phone, String title, String description, 
+                                        String buttonText, String footerText, 
                                         List<Map<String, Object>> sections) {
-        String url = String.format("/message/sendList/%s", properties.getEvolution().getInstanceName());
-
+        
         Map<String, Object> body = new HashMap<>();
-        body.put("number", phone);
+        body.put("number", formatPhone(phone));
         body.put("title", title);
         body.put("description", description);
         body.put("buttonText", buttonText);
-        body.put("footerText", footerText != null ? footerText : "");
-        body.put("values", sections);
-
-        log.info("Enviando lista interativa para {} via Evolution API", phone);
+        body.put("footer", footerText);
+        body.put("sections", sections);
+        body.put("delay", 1000);
 
         return webClient.post()
-                .uri(url)
+                .uri(uriBuilder -> uriBuilder
+                        .path("/message/sendList/{instance}")
+                        .build(properties.getEvolution().getInstanceName()))
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("apikey", properties.getEvolution().getApiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .doOnSuccess(response -> log.info("Lista enviada com sucesso para {}", phone))
-                .doOnError(error -> {
-                    if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException ex) {
-                        log.warn("Evolution API sendList 4xx/5xx (fallback para menu em texto): status={}, body={}",
-                                ex.getStatusCode(), ex.getResponseBodyAsString());
-                    }
-                    log.error("Erro ao enviar lista para {}: {}", phone, error.getMessage());
-                });
+                .doOnError(e -> log.error("Erro ao enviar lista para {}: {}", phone, e.getMessage()));
     }
 
-    /**
-     * Monta uma seção para sendList: lista de linhas com title, description e rowId.
-     */
-    public static Map<String, Object> listSection(String sectionTitle, List<Map<String, String>> rows) {
+    // --- MÉTODOS ESTÁTICOS AUXILIARES (Usados pelo MenuOptions) ---
+    
+    public static Map<String, String> listRow(String id, String title, String description) {
+        Map<String, String> row = new HashMap<>();
+        row.put("id", id);
+        row.put("title", title);
+        row.put("description", description);
+        return row;
+    }
+
+    public static Map<String, Object> listSection(String title, List<Map<String, String>> rows) {
         Map<String, Object> section = new HashMap<>();
-        section.put("title", sectionTitle);
+        section.put("title", title);
         section.put("rows", rows);
         return section;
     }
 
-    /**
-     * Monta uma linha para sendList.
-     */
-    public static Map<String, String> listRow(String rowId, String title, String description) {
-        Map<String, String> row = new HashMap<>();
-        row.put("rowId", rowId);
-        row.put("title", title);
-        row.put("description", description != null ? description : "");
-        return row;
+    // --- UTILS ---
+
+    private String formatPhone(String phone) {
+        if (phone == null) return "";
+        // Remove caracteres não numéricos
+        String nums = phone.replaceAll("[^0-9]", "");
+        // Se não tiver DDI (comprimento 10 ou 11), adiciona 55
+        if (nums.length() == 10 || nums.length() == 11) {
+            return "55" + nums;
+        }
+        return nums;
     }
 }

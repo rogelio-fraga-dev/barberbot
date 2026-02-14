@@ -5,179 +5,194 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 @Data
-@JsonIgnoreProperties(ignoreUnknown = true) // Evolution API v2 envia campos extras (ex: remoteJidAlt)
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class EvolutionWebhookDTO {
+
     @JsonProperty("event")
     private String event;
-    
+
     @JsonProperty("instance")
     private String instance;
-    
+
     @JsonProperty("data")
-    private WebhookData data;
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class WebhookData {
-        @JsonProperty("key")
-        private MessageKey key;
-        
-        @JsonProperty("message")
-        private Message message;
-        
-        @JsonProperty("messageType")
-        private String messageType;
-        
-        @JsonProperty("pushName")
-        private String pushName;
-    }
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class MessageKey {
-        @JsonProperty("remoteJid")
-        private String remoteJid;
-        
-        @JsonProperty("fromMe")
-        private Boolean fromMe;
-        
-        @JsonProperty("id")
-        private String id;
-    }
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class Message {
-        @JsonProperty("conversation")
-        private String conversation;
+    private DataDTO data;
 
-        @JsonProperty("imageMessage")
-        private ImageMessage imageMessage;
+    @JsonProperty("sender")
+    private String sender; // Número do remetente (às vezes vem aqui)
 
-        @JsonProperty("audioMessage")
-        private AudioMessage audioMessage;
+    // --- Métodos Utilitários Inteligentes ---
 
-        @JsonProperty("extendedTextMessage")
-        private ExtendedTextMessage extendedTextMessage;
-
-        /** Resposta quando o usuário toca em uma opção da lista interativa (rowId) */
-        @JsonProperty("listResponseMessage")
-        private ListResponseMessage listResponseMessage;
-    }
-
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ListResponseMessage {
-        @JsonProperty("singleSelectReply")
-        private SingleSelectReply singleSelectReply;
-    }
-
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class SingleSelectReply {
-        @JsonProperty("selectedRowId")
-        private String selectedRowId;
-    }
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ImageMessage {
-        @JsonProperty("caption")
-        private String caption;
-        
-        @JsonProperty("mimetype")
-        private String mimetype;
-        
-        @JsonProperty("url")
-        private String url;
-    }
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class AudioMessage {
-        @JsonProperty("mimetype")
-        private String mimetype;
-        
-        @JsonProperty("url")
-        private String url;
-        
-        @JsonProperty("seconds")
-        private Integer seconds;
-    }
-    
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ExtendedTextMessage {
-        @JsonProperty("text")
-        private String text;
-    }
-    
-    // Helper methods
-    /** WhatsApp: grupos = @g.us, chat privado = @s.whatsapp.net. Só processamos chat privado. */
     public boolean isGroupChat() {
-        if (data == null || data.getKey() == null) return false;
-        String remoteJid = data.getKey().getRemoteJid();
-        return remoteJid != null && remoteJid.endsWith("@g.us");
+        return data != null && data.key != null && data.key.remoteJid != null && data.key.remoteJid.endsWith("@g.us");
     }
 
-    public String getPhoneNumber() {
-        if (data != null && data.getKey() != null) {
-            String remoteJid = data.getKey().getRemoteJid();
-            if (remoteJid != null && remoteJid.contains("@")) {
-                String part = remoteJid.split("@")[0];
-                // Só retorna como "número" se for chat privado (não grupo)
-                if (remoteJid.endsWith("@s.whatsapp.net")) return part;
-            }
-        }
-        return null;
-    }
-    
-    public String getMessageText() {
-        if (data == null || data.getMessage() == null) {
-            return null;
-        }
-
-        Message msg = data.getMessage();
-        // Resposta da lista interativa (usuário tocou em uma opção) -> rowId
-        if (msg.getListResponseMessage() != null && msg.getListResponseMessage().getSingleSelectReply() != null) {
-            String rowId = msg.getListResponseMessage().getSingleSelectReply().getSelectedRowId();
-            if (rowId != null && !rowId.isEmpty()) return rowId;
-        }
-        if (msg.getConversation() != null) {
-            return msg.getConversation();
-        }
-        if (msg.getExtendedTextMessage() != null && msg.getExtendedTextMessage().getText() != null) {
-            return msg.getExtendedTextMessage().getText();
-        }
-        if (msg.getImageMessage() != null && msg.getImageMessage().getCaption() != null) {
-            return msg.getImageMessage().getCaption();
-        }
-        return null;
-    }
-    
     public boolean hasImage() {
-        return data != null && 
-               data.getMessage() != null && 
-               data.getMessage().getImageMessage() != null;
+        return data != null && data.message != null && data.message.imageMessage != null;
     }
     
     public boolean hasAudio() {
-        return data != null && 
-               data.getMessage() != null && 
-               data.getMessage().getAudioMessage() != null;
+        return data != null && data.message != null && 
+               (data.message.audioMessage != null || data.message.voiceMessage != null); // Evolution às vezes chama de voiceMessage
     }
-    
+
     public String getImageUrl() {
-        if (hasImage()) {
-            return data.getMessage().getImageMessage().getUrl();
-        }
-        return null;
+        if (!hasImage()) return null;
+        // A URL geralmente vem no base64 ou url da Evolution, dependendo da config.
+        // Assumindo que a Evolution está configurada para retornar a URL da mídia
+        return data.message.imageMessage.url; 
     }
     
     public String getAudioUrl() {
-        if (hasAudio()) {
-            return data.getMessage().getAudioMessage().getUrl();
+        if (!hasAudio()) return null;
+        if (data.message.audioMessage != null) return data.message.audioMessage.url;
+        if (data.message.voiceMessage != null) return data.message.voiceMessage.url;
+        return null;
+    }
+
+    /**
+     * O CÉREBRO DA LEITURA:
+     * Extrai o texto, seja de uma mensagem normal, de uma legenda de foto, 
+     * ou de um CLIQUE EM BOTÃO (List Response).
+     */
+    public String getMessageText() {
+        if (data == null || data.message == null) return null;
+
+        // 1. Texto Simples (Conversation)
+        if (data.message.conversation != null && !data.message.conversation.isEmpty()) {
+            return data.message.conversation;
+        }
+
+        // 2. Texto Estendido (ExtendedTextMessage)
+        if (data.message.extendedTextMessage != null && data.message.extendedTextMessage.text != null) {
+            return data.message.extendedTextMessage.text;
+        }
+
+        // 3. Resposta de Imagem (Legenda)
+        if (data.message.imageMessage != null && data.message.imageMessage.caption != null) {
+            return data.message.imageMessage.caption;
+        }
+
+        // 4. CLIQUE EM LISTA (O Menu Interativo!)
+        if (data.message.listResponseMessage != null && 
+            data.message.listResponseMessage.singleSelectReply != null) {
+            // Retorna o ID do botão clicado (ex: "menu_agendar") para o Orchestrator processar
+            return data.message.listResponseMessage.singleSelectReply.selectedRowId;
+        }
+
+        // 5. Clique em Botão Simples (ButtonsResponseMessage)
+        if (data.message.buttonsResponseMessage != null) {
+            return data.message.buttonsResponseMessage.selectedButtonId;
+        }
+
+        return null;
+    }
+    
+    public String getPhoneNumber() {
+        if (data != null && data.key != null && data.key.remoteJid != null) {
+            return data.key.remoteJid.replace("@s.whatsapp.net", "");
         }
         return null;
+    }
+
+    // --- Estruturas Internas do JSON da Evolution ---
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DataDTO {
+        @JsonProperty("key")
+        private KeyDTO key;
+
+        @JsonProperty("pushName")
+        private String pushName;
+
+        @JsonProperty("message")
+        private MessageDTO message;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class KeyDTO {
+        @JsonProperty("remoteJid")
+        private String remoteJid;
+
+        @JsonProperty("fromMe")
+        private Boolean fromMe;
+
+        @JsonProperty("id")
+        private String id;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class MessageDTO {
+        @JsonProperty("conversation")
+        private String conversation;
+
+        @JsonProperty("extendedTextMessage")
+        private ExtendedTextMessageDTO extendedTextMessage;
+
+        @JsonProperty("imageMessage")
+        private ImageMessageDTO imageMessage;
+        
+        @JsonProperty("audioMessage")
+        private AudioMessageDTO audioMessage;
+
+        @JsonProperty("voiceMessage") // Às vezes a Evolution manda como voiceMessage
+        private AudioMessageDTO voiceMessage;
+
+        @JsonProperty("listResponseMessage")
+        private ListResponseMessageDTO listResponseMessage;
+
+        @JsonProperty("buttonsResponseMessage")
+        private ButtonsResponseMessageDTO buttonsResponseMessage;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ExtendedTextMessageDTO {
+        @JsonProperty("text")
+        private String text;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ImageMessageDTO {
+        @JsonProperty("caption")
+        private String caption;
+        @JsonProperty("url") // URL da imagem para download
+        private String url;
+    }
+    
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class AudioMessageDTO {
+        @JsonProperty("url")
+        private String url;
+    }
+
+    // --- DTOs para Menu Interativo ---
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ListResponseMessageDTO {
+        @JsonProperty("title")
+        private String title;
+        
+        @JsonProperty("singleSelectReply")
+        private SingleSelectReplyDTO singleSelectReply;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SingleSelectReplyDTO {
+        @JsonProperty("selectedRowId")
+        private String selectedRowId; // É aqui que vem o "menu_agendar"
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ButtonsResponseMessageDTO {
+        @JsonProperty("selectedButtonId")
+        private String selectedButtonId;
     }
 }

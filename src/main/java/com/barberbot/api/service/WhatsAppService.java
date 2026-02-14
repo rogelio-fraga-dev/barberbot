@@ -6,6 +6,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 @Slf4j
@@ -15,9 +17,6 @@ public class WhatsAppService {
     
     private final EvolutionClient evolutionClient;
     
-    /**
-     * Envia uma mensagem de texto
-     */
     public void sendTextMessage(String phone, String message) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -28,9 +27,6 @@ public class WhatsAppService {
         });
     }
     
-    /**
-     * Envia uma mensagem genérica
-     */
     public void sendMessage(MessageDTO messageDTO) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -41,9 +37,6 @@ public class WhatsAppService {
         });
     }
     
-    /**
-     * Envia uma imagem com legenda
-     */
     public void sendImage(String phone, String imageUrl, String caption) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -54,10 +47,24 @@ public class WhatsAppService {
         });
     }
 
-    /**
-     * Envia o menu de opções em texto (1 a 6). Cliente pode digitar o número ou o nome da opção.
-     */
     public void sendMenuList(String phone) {
         sendTextMessage(phone, MenuOptions.getMenuAsText());
     }
-}
+
+    /**
+     * Envia lista interativa (Botões)
+     */
+    public void sendListMessage(String phone, String title, String description, 
+                                String buttonText, String footerText, 
+                                List<Map<String, Object>> sections) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                evolutionClient.sendListMessage(phone, title, description, buttonText, footerText, sections).block();
+            } catch (Exception e) {
+                log.error("Erro ao enviar lista interativa para {}: {}", phone, e.getMessage());
+                // Lança exceção para o Orchestrator pegar e fazer fallback
+                throw new RuntimeException(e);
+            }
+        });
+    }
+}       

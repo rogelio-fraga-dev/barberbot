@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Slf4j
@@ -16,20 +17,15 @@ public class CustomerService {
     
     private final CustomerRepository customerRepository;
     
-    /**
-     * Busca ou cria um cliente pelo número de telefone
-     */
     @Transactional
     public Customer findOrCreateCustomer(String phoneNumber, String name) {
         Optional<Customer> existing = customerRepository.findByPhoneNumber(phoneNumber);
         
         if (existing.isPresent()) {
             Customer customer = existing.get();
-            // Atualiza o nome se foi fornecido e diferente
             if (name != null && !name.isEmpty() && !name.equals(customer.getName())) {
                 customer.setName(name);
                 customer = customerRepository.save(customer);
-                log.info("Nome do cliente {} atualizado para: {}", phoneNumber, name);
             }
             return customer;
         }
@@ -39,23 +35,61 @@ public class CustomerService {
                 .name(name)
                 .build();
         
-        Customer saved = customerRepository.save(newCustomer);
-        log.info("Novo cliente criado: {} - {}", phoneNumber, name);
-        return saved;
+        return customerRepository.save(newCustomer);
+    }
+    
+    public boolean isCustomerPaused(String phoneNumber) {
+        return customerRepository.findByPhoneNumber(phoneNumber)
+                .map(Customer::isPaused)
+                .orElse(false);
+    }
+
+    @Transactional
+    public void pauseCustomer(String phoneNumber, int minutes) {
+        Optional<Customer> customerOpt = customerRepository.findByPhoneNumber(phoneNumber);
+        if (customerOpt.isPresent()) {
+            Customer customer = customerOpt.get();
+            customer.setPausedUntil(LocalDateTime.now().plusMinutes(minutes));
+            customerRepository.save(customer);
+            log.info("Cliente {} pausado por {} minutos.", phoneNumber, minutes);
+        }
+    }
+
+    @Transactional
+    public void resumeCustomer(String phoneNumber) {
+        Optional<Customer> customerOpt = customerRepository.findByPhoneNumber(phoneNumber);
+        if (customerOpt.isPresent()) {
+            Customer customer = customerOpt.get();
+            customer.setPausedUntil(null);
+            customerRepository.save(customer);
+            log.info("Cliente {} retomado (bot ativo).", phoneNumber);
+        }
     }
     
     /**
-     * Busca cliente pelo número de telefone
+     * Importa uma lista de contatos no formato "numero,nome;numero,nome"
      */
-    public Optional<Customer> findByPhoneNumber(String phoneNumber) {
-        return customerRepository.findByPhoneNumber(phoneNumber);
-    }
-    
-    /**
-     * Verifica se um número pertence ao admin
-     */
-    public boolean isAdmin(String phoneNumber) {
-        // Lógica será implementada no OrchestratorService usando BarberBotProperties
-        return false;
+    @Transactional
+    public int importContactsFromText(String textList) {
+        int count = 0;
+        String[] entries = textList.split(";"); // Separa por ponto e vírgula
+        
+        for (String entry : entries) {
+            try {
+                String[] parts = entry.trim().split(","); // Separa numero de nome
+                if (parts.length >= 1) {
+                    String phone = parts[0].trim().replaceAll("[^0-9]", "");
+                    String name = parts.length > 1 ? parts[1].trim() : "Importado";
+                    
+                    if (!phone.isEmpty()) {
+                        findOrCreateCustomer(phone, name);
+                        count++;
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Erro ao importar item: {}", entry);
+            }
+        }
+        return count;
     }
 }

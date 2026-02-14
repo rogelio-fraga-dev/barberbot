@@ -25,6 +25,10 @@ public class Customer {
     @Column(name = "name", length = 255)
     private String name;
     
+    // Novo campo: Controla até quando o bot deve ficar quieto (Modo Pausa)
+    @Column(name = "paused_until")
+    private LocalDateTime pausedUntil;
+    
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
     
@@ -40,5 +44,10 @@ public class Customer {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+    
+    // Método auxiliar para saber se está pausado agora
+    public boolean isPaused() {
+        return pausedUntil != null && pausedUntil.isAfter(LocalDateTime.now());
     }
 }

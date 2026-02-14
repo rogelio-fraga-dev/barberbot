@@ -24,9 +24,8 @@ public class AgendaService {
     private final BarberBotProperties properties;
     private final ObjectMapper objectMapper;
     
-    /**
-     * Processa uma agenda JSON e cria tarefas agendadas para envio de avaliações
-     */
+    private static final String GOOGLE_REVIEW_LINK = "https://share.google/Vpq7gT3nMiz9Wl2Cj";
+    
     @Transactional
     public int processAgenda(String agendaJson) {
         try {
@@ -43,36 +42,45 @@ public class AgendaService {
             for (AgendaDTO.AgendaItem item : agenda.getItems()) {
                 try {
                     LocalTime serviceTime = item.getTime();
-                    LocalDateTime executionTime = LocalDateTime.of(today, serviceTime)
-                            .plusMinutes(properties.getSchedule().getDelayMinutes());
+                    LocalDateTime appointmentDateTime = LocalDateTime.of(today, serviceTime);
+                    String customerName = item.getName() != null ? item.getName() : "Campeão";
                     
-                    // Mensagem padrão de avaliação
-                    String reviewMessage = String.format(
-                        "Olá %s! Esperamos que tenha gostado do seu atendimento hoje às %s. " +
-                        "Sua opinião é muito importante para nós! " +
-                        "Por favor, avalie nosso serviço: https://maps.app.goo.gl/seulink",
-                        item.getName() != null ? item.getName() : "Cliente",
-                        serviceTime.format(DateTimeFormatter.ofPattern("HH:mm"))
+                    // 1. LEMBRETE (1 hora antes)
+                    LocalDateTime reminderTime = appointmentDateTime.minusHours(1);
+                    if (reminderTime.isAfter(LocalDateTime.now())) {
+                        String reminderMsg = String.format(
+                            "Fala %s! 💈 Passando pra lembrar do seu horário hoje às %s na LH Barbearia. Estamos te esperando!",
+                            customerName, serviceTime.format(DateTimeFormatter.ofPattern("HH:mm"))
+                        );
+                        scheduleTask(item.getPhone(), reminderTime, "REMINDER", reminderMsg);
+                        tasksCreated++;
+                    }
+
+                    // 2. AVALIAÇÃO (Pós-corte, ex: 2h depois)
+                    LocalDateTime reviewTime = appointmentDateTime.plusHours(2);
+                    String reviewMsg = String.format(
+                        "E aí %s, curtiu o visual novo? 🔥\nSua opinião fortalece demais nosso trabalho. Avalia a gente aqui rapidinho: %s",
+                        customerName, GOOGLE_REVIEW_LINK
                     );
-                    
-                    ScheduledTask task = ScheduledTask.builder()
-                            .customerPhone(item.getPhone())
-                            .executionTime(executionTime)
-                            .taskType("REVIEW_REQUEST")
-                            .messageContent(reviewMessage)
-                            .status(ScheduledTask.TaskStatus.PENDING)
-                            .build();
-                    
-                    scheduledTaskRepository.save(task);
+                    scheduleTask(item.getPhone(), reviewTime, "REVIEW_REQUEST", reviewMsg);
                     tasksCreated++;
-                    log.info("Tarefa agendada para {} às {}", item.getPhone(), executionTime);
+
+                    // 3. REATIVAÇÃO RÁPIDA (Mudança para 10 DIAS)
+                    // Como pedido: em vez de 25 dias, mandamos em 10 para manter o giro alto
+                    LocalDateTime returnTime = appointmentDateTime.plusDays(10).withHour(9).withMinute(30); 
+                    String returnMsg = String.format(
+                        "Opa %s! 👊 Já faz 10 dias do último talento. Pra manter o corte sempre na régua, que tal já deixar agendado o próximo? ✂️\n\nClica aqui: %s",
+                        customerName, properties.getMenu().getScheduleUrl()
+                    );
+                    scheduleTask(item.getPhone(), returnTime, "RETURN_REMINDER", returnMsg);
+                    tasksCreated++;
                     
                 } catch (Exception e) {
                     log.error("Erro ao processar item da agenda: {}", item, e);
                 }
             }
             
-            log.info("Total de {} tarefas criadas a partir da agenda", tasksCreated);
+            log.info("Processamento concluído. {} tarefas agendadas.", tasksCreated);
             return tasksCreated;
             
         } catch (Exception e) {
@@ -81,28 +89,14 @@ public class AgendaService {
         }
     }
     
-    /**
-     * Cria uma tarefa única de avaliação
-     */
-    @Transactional
-    public ScheduledTask createReviewTask(String customerPhone, LocalDateTime serviceTime, String customerName) {
-        LocalDateTime executionTime = serviceTime.plusMinutes(properties.getSchedule().getDelayMinutes());
-        
-        String reviewMessage = String.format(
-            "Olá %s! Esperamos que tenha gostado do seu atendimento. " +
-            "Sua opinião é muito importante para nós! " +
-            "Por favor, avalie nosso serviço: https://maps.app.goo.gl/seulink",
-            customerName != null ? customerName : "Cliente"
-        );
-        
+    private void scheduleTask(String phone, LocalDateTime time, String type, String message) {
         ScheduledTask task = ScheduledTask.builder()
-                .customerPhone(customerPhone)
-                .executionTime(executionTime)
-                .taskType("REVIEW_REQUEST")
-                .messageContent(reviewMessage)
+                .customerPhone(phone)
+                .executionTime(time)
+                .taskType(type)
+                .messageContent(message)
                 .status(ScheduledTask.TaskStatus.PENDING)
                 .build();
-        
-        return scheduledTaskRepository.save(task);
+        scheduledTaskRepository.save(task);
     }
 }
