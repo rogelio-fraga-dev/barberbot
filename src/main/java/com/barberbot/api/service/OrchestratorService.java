@@ -6,6 +6,7 @@ import com.barberbot.api.model.Customer;
 import com.barberbot.api.model.Interaction;
 import com.barberbot.api.repository.CustomerRepository;
 import com.barberbot.api.repository.InteractionRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -31,46 +32,41 @@ public class OrchestratorService {
     private final AgendaService agendaService;
     private final BarberBotProperties properties;
 
-    // Cache de IDs para evitar duplicatas (Idempotência em Memória)
     private static final Map<String, LocalDateTime> processedMessageIds = new ConcurrentHashMap<>();
+    private static final Map<String, String> adminStates = new ConcurrentHashMap<>();
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /**
-     * Limpa o cache de IDs antigos a cada 10 minutos.
-     */
     @Scheduled(fixedRate = 600000) 
     public void clearProcessedCache() {
         LocalDateTime limit = LocalDateTime.now().minusMinutes(20);
         processedMessageIds.entrySet().removeIf(entry -> entry.getValue().isBefore(limit));
     }
 
-    /**
-     * Processa o Webhook recebido.
-     */
     @Async
     public void processWebhook(EvolutionWebhookDTO webhook) {
         try {
             if (shouldIgnoreMessage(webhook)) return;
-            
-            // --- BARREIRA DE IDEMPOTÊNCIA ---
             if (isDuplicateMessage(webhook)) return;
-            // --------------------------------
             
             String phoneNumber = webhook.getPhoneNumber();
-            log.info("Processando webhook do número: {}", phoneNumber);
+            log.info("=====================================================");
+            log.info("[WEBHOOK] Nova mensagem de: {}", phoneNumber);
             
             if (isAdminNumber(phoneNumber)) {
-                processAdminMessage(webhook);
+                log.info("[SISTEMA] Usuário autenticado como ADMINISTRADOR.");
+                processAdminMessage(webhook, phoneNumber);
             } else {
-                // Se o cliente estiver em "Modo Pausa" (atendimento humano), o bot ignora.
                 if (customerService.isCustomerPaused(phoneNumber)) {
-                    log.info("Cliente {} está em pausa (atendimento humano). Bot silenciado.", phoneNumber);
+                    log.info("[SISTEMA] Cliente {} está PAUSADO. Bot não enviará resposta.", phoneNumber);
                     return;
                 }
-                processCustomerMessage(webhook);
+                log.info("[SISTEMA] Usuário identificado como CLIENTE.");
+                processCustomerMessage(webhook, phoneNumber);
             }
+            log.info("=====================================================");
 
         } catch (Exception e) {
-            log.error("Erro fatal no processamento assíncrono do webhook: {}", e.getMessage(), e);
+            log.error("[ERRO FATAL] {}", e.getMessage(), e);
         }
     }
 
@@ -91,217 +87,186 @@ public class OrchestratorService {
     }
     
     private boolean isAdminNumber(String phoneNumber) {
-        String adminPhone = properties.getAdmin().getPhone();
-        String normalizedPhone = phoneNumber != null ? phoneNumber.replaceAll("[^0-9]", "") : "";
-        String normalizedAdmin = adminPhone != null ? adminPhone.replaceAll("[^0-9]", "") : "";
-        
-        if (normalizedAdmin.isEmpty()) return false;
-        
-        if (normalizedPhone.equals(normalizedAdmin)) return true;
-        if (normalizedPhone.equals("55" + normalizedAdmin)) return true;
-        if (normalizedAdmin.length() == 11 && normalizedPhone.endsWith(normalizedAdmin)) return true;
-        
-        return false;
+        String adminPhone = properties.getAdmin().getPhone().replaceAll("[^0-9]", "");
+        String normalizedPhone = phoneNumber.replaceAll("[^0-9]", "");
+        if (adminPhone.isEmpty()) return false;
+        return normalizedPhone.equals(adminPhone) || normalizedPhone.equals("55" + adminPhone) || 
+               (adminPhone.length() == 11 && normalizedPhone.endsWith(adminPhone));
+    }
+
+    private String fetchBase64FromEvolution(String messageId) {
+        try {
+            String baseUrl = properties.getEvolution().getBaseUrl();
+            if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+            String url = baseUrl + "/chat/getBase64FromMediaMessage/" + properties.getEvolution().getInstanceName();
+            String jsonPayload = String.format("{\"message\":{\"key\":{\"id\":\"%s\"}}}", messageId);
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("apikey", properties.getEvolution().getApiKey())
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonPayload))
+                    .build();
+            java.net.http.HttpResponse<String> response = java.net.http.HttpClient.newHttpClient()
+                    .send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(response.body());
+                if (root.has("base64") && !root.get("base64").isNull()) return root.get("base64").asText();
+            }
+        } catch (Exception e) {}
+        return null;
     }
     
-    /**
-     * Lógica exclusiva para o Administrador (Luiz).
-     */
-    private void processAdminMessage(EvolutionWebhookDTO webhook) {
-        String phoneNumber = webhook.getPhoneNumber();
+    private void processAdminMessage(EvolutionWebhookDTO webhook, String phoneNumber) {
+        String command = null;
         
-        // 1. Processamento de Imagem (Agenda)
         if (webhook.hasImage()) {
-            whatsAppService.sendTextMessage(phoneNumber, "⏳ Analisando agenda...");
+            adminStates.remove(phoneNumber);
+            String base64 = webhook.getBase64() != null ? webhook.getBase64() : fetchBase64FromEvolution(webhook.getData().getKey().getId());
+            if (base64 == null) {
+                whatsAppService.sendTextMessage(phoneNumber, "❌ O arquivo da imagem chegou corrompido.");
+                return;
+            }
+            whatsAppService.sendTextMessage(phoneNumber, "⏳ Lendo horários da agenda...");
             try {
-                String agendaJson = openAIService.extractAgendaFromImage(webhook.getImageUrl());
+                String agendaJson = openAIService.extractAgendaFromImage(base64, webhook.getMimeType());
                 int tasksCreated = agendaService.processAgenda(agendaJson);
-                whatsAppService.sendTextMessage(phoneNumber, "✅ Agenda processada! " + tasksCreated + " agendamentos criados (lembretes + avaliações).");
+                whatsAppService.sendTextMessage(phoneNumber, "✅ Agenda salva! " + tasksCreated + " clientes receberão lembretes.");
             } catch (Exception e) {
-                log.error("Erro agenda: {}", e.getMessage());
-                whatsAppService.sendTextMessage(phoneNumber, "❌ Erro ao ler imagem da agenda.");
+                whatsAppService.sendTextMessage(phoneNumber, "❌ Erro ao ler a imagem. Tente mandar uma foto mais nítida.");
             }
             return;
         } 
         
-        // 2. Processamento de Áudio (Transcrição)
         if (webhook.hasAudio()) {
-            try {
-                String transcription = openAIService.transcribeAudio(webhook.getAudioUrl());
-                whatsAppService.sendTextMessage(phoneNumber, "📝 Transcrição: " + transcription);
-            } catch (Exception e) {
-                log.error("Erro áudio: {}", e.getMessage());
-                whatsAppService.sendTextMessage(phoneNumber, "❌ Erro ao transcrever áudio.");
+            String base64 = webhook.getBase64() != null ? webhook.getBase64() : fetchBase64FromEvolution(webhook.getData().getKey().getId());
+            if (base64 == null) {
+                whatsAppService.sendTextMessage(phoneNumber, "❌ Ocorreu um erro ao baixar o áudio.");
+                return;
             }
-            return;
-        } 
+            whatsAppService.sendTextMessage(phoneNumber, "🎧 Ouvindo...");
+            command = openAIService.transcribeAudio(base64, webhook.getMimeType());
+            log.info("[ADMIN] Áudio transcrito: '{}'", command);
+            whatsAppService.sendTextMessage(phoneNumber, "📝 _\"" + command + "\"_");
+        } else {
+            command = webhook.getMessageText();
+        }
         
-        // 3. Comandos de Texto Administrativos
-        String text = webhook.getMessageText();
-        if (text != null) {
-            String command = text.trim();
+        if (command != null) {
+            String originalCommand = command.trim();
+            // Limpa pontuações para que áudios como "Comandos." virem "comandos"
+            String cmdLower = originalCommand.toLowerCase().replaceAll("[^a-z0-9 ]", "").trim();
+            String currentState = adminStates.get(phoneNumber);
             
-            // --- COMANDO: LISTAR COMANDOS (AJUDA) ---
-            if (command.equalsIgnoreCase("comandos") || command.equalsIgnoreCase("ajuda") || command.equalsIgnoreCase("help")) {
-                String helpMessage = """
-                        🛠️ *MANUAL DE COMANDOS - ADMIN*
-                        
-                        📸 *Envie Foto da Agenda*: O bot lê os horários e agenda lembretes automáticos.
-                        
-                        🎤 *Envie Áudio*: O bot transcreve o áudio para texto.
-                        
-                        📊 *Resumo*: Mostra quantos clientes e mensagens temos na base.
-                        
-                        ⏸️ *Pausar: [numero]*
-                        _Ex: Pausar: 34999998888_
-                        Silencia o bot para esse cliente por 1 hora (pra você assumir).
-                        
-                        ▶️ *Retomar: [numero]*
-                        _Ex: Retomar: 34999998888_
-                        O bot volta a responder esse cliente imediatamente.
-                        
-                        📢 *Avisar: [mensagem]*
-                        _Ex: Avisar: Estamos sem energia hoje!_
-                        Envia a mensagem para TODOS os clientes cadastrados.
-                        
-                        📥 *Importar: [num],[nome]; [num],[nome]*
-                        Cadastra clientes em massa.
-                        
-                        🎯 *Prospeccao: [msg] ALVOS: [n1],[n2]*
-                        Envia mensagem para números que não estão na base (leads).
-                        """;
-                whatsAppService.sendTextMessage(phoneNumber, helpMessage);
-                return;
-            }
-            
-            // Comando: Resumo / Status
-            if (command.equalsIgnoreCase("resumo") || command.equalsIgnoreCase("status") || command.equalsIgnoreCase("info")) {
-                long totalClientes = customerRepository.count();
-                long totalInteracoes = interactionRepository.count();
-                whatsAppService.sendTextMessage(phoneNumber, String.format("📊 *Status BarberBot*\n👥 Clientes: %d\n💬 Msgs: %d\n✅ Online", totalClientes, totalInteracoes));
-                return;
-            }
-            
-            // Comando: Pausar
-            if (command.toLowerCase().startsWith("pausar:")) {
-                String targetPhone = command.substring(7).trim().replaceAll("[^0-9]", "");
-                if (!targetPhone.isEmpty()) {
-                    customerService.pauseCustomer(targetPhone, 60); 
-                    whatsAppService.sendTextMessage(phoneNumber, "⏸️ Bot pausado para " + targetPhone + " por 1 hora.");
-                } else {
-                    whatsAppService.sendTextMessage(phoneNumber, "⚠️ Formato inválido. Use: Pausar: [numero]");
-                }
-                return;
-            }
-            
-            // Comando: Retomar
-            if (command.toLowerCase().startsWith("retomar:")) {
-                String targetPhone = command.substring(8).trim().replaceAll("[^0-9]", "");
-                if (!targetPhone.isEmpty()) {
-                    customerService.resumeCustomer(targetPhone);
-                    whatsAppService.sendTextMessage(phoneNumber, "▶️ Bot retomado para " + targetPhone);
-                } else {
-                    whatsAppService.sendTextMessage(phoneNumber, "⚠️ Formato inválido. Use: Retomar: [numero]");
-                }
-                return;
-            }
-
-            // Comando: Importar Lista
-            if (command.toLowerCase().startsWith("importar:")) {
-                String lista = command.substring(9).trim();
-                int imported = customerService.importContactsFromText(lista);
-                whatsAppService.sendTextMessage(phoneNumber, "✅ Importação concluída! " + imported + " contatos processados.");
-                return;
-            }
-
-            // Comando: Prospecção
-            if (command.toLowerCase().startsWith("prospeccao:")) {
-                try {
-                    String[] parts = command.split("ALVOS:");
-                    if (parts.length < 2) {
-                        whatsAppService.sendTextMessage(phoneNumber, "⚠️ Formato inválido. Use: Prospeccao: [Msg] ALVOS: num1,num2");
-                        return;
-                    }
-                    String msg = parts[0].substring(11).trim(); 
-                    String[] numbers = parts[1].split(",");
-                    
-                    whatsAppService.sendTextMessage(phoneNumber, "🚀 Enviando prospecção para " + numbers.length + " números...");
-                    
-                    new Thread(() -> {
-                        for (String num : numbers) {
-                            String target = num.trim().replaceAll("[^0-9]", "");
-                            if (!target.isEmpty()) {
-                                whatsAppService.sendTextMessage(target, msg);
-                                try { Thread.sleep(2000); } catch (InterruptedException e) {} 
-                            }
-                        }
-                        whatsAppService.sendTextMessage(phoneNumber, "✅ Prospecção finalizada.");
-                    }).start();
-                } catch (Exception e) {
-                    whatsAppService.sendTextMessage(phoneNumber, "❌ Erro na prospecção: " + e.getMessage());
-                }
-                return;
-            }
-
-            // Comando: Avisar (Broadcast)
-            if (command.toLowerCase().startsWith("avisar:") || command.toLowerCase().startsWith("aviso:")) {
-                int separatorIndex = command.indexOf(":");
-                String broadcastMessage = command.substring(separatorIndex + 1).trim();
-                
-                if (broadcastMessage.length() < 5) {
-                    whatsAppService.sendTextMessage(phoneNumber, "⚠️ Mensagem muito curta. Digite: 'Avisar: [sua mensagem]'");
+            if (currentState != null) {
+                if (cmdLower.equals("cancelar")) {
+                    adminStates.remove(phoneNumber);
+                    whatsAppService.sendTextMessage(phoneNumber, "❌ Ação cancelada.");
+                    sendFullMenu(phoneNumber);
                     return;
                 }
-                performBroadcast(phoneNumber, broadcastMessage);
-                return;
+                if (currentState.equals("AVISAR")) {
+                    adminStates.remove(phoneNumber);
+                    performBroadcast(phoneNumber, originalCommand);
+                    return;
+                }
+                if (currentState.equals("PAUSAR")) {
+                    adminStates.remove(phoneNumber);
+                    String targetPhone = cmdLower.replaceAll("[^0-9]", "");
+                    customerService.pauseCustomer(targetPhone, 60);
+                    whatsAppService.sendTextMessage(phoneNumber, "⏸️ Bot silenciado para " + targetPhone);
+                    return;
+                }
+                if (currentState.equals("RETOMAR")) {
+                    adminStates.remove(phoneNumber);
+                    String targetPhone = cmdLower.replaceAll("[^0-9]", "");
+                    customerService.resumeCustomer(targetPhone);
+                    whatsAppService.sendTextMessage(phoneNumber, "▶️ Bot ativado para " + targetPhone);
+                    return;
+                }
             }
             
-            // Fallback: Se não reconhecer o comando, sugere digitar COMANDOS
-            whatsAppService.sendTextMessage(phoneNumber, "🤖 Comando não reconhecido.\nDigite *COMANDOS* para ver a lista de opções.");
+            if (cmdLower.startsWith("comando") || cmdLower.equals("ajuda") || cmdLower.equals("menu")) {
+                sendFullMenu(phoneNumber);
+            } else if (cmdLower.equals("1")) {
+                whatsAppService.sendTextMessage(phoneNumber, String.format("📊 *Status BarberBot*\n👥 Clientes na Base: %d", customerRepository.count()));
+            } else if (cmdLower.equals("2") || cmdLower.startsWith("avisa")) {
+                adminStates.put(phoneNumber, "AVISAR");
+                whatsAppService.sendTextMessage(phoneNumber, "📢 *Modo Disparo (Avisar Todos)*\nDigite a mensagem ou *Mande um Áudio* com o aviso.\n\n_(Para abortar, diga 'cancelar')_");
+            } else if (cmdLower.equals("3") || cmdLower.startsWith("pausa")) {
+                adminStates.put(phoneNumber, "PAUSAR");
+                whatsAppService.sendTextMessage(phoneNumber, "⏸️ *Pausar Bot*\nDigite o número do cliente (com DDD).\n\n_(Para abortar, diga 'cancelar')_");
+            } else if (cmdLower.equals("4") || cmdLower.startsWith("retoma")) {
+                adminStates.put(phoneNumber, "RETOMAR");
+                whatsAppService.sendTextMessage(phoneNumber, "▶️ *Retomar Bot*\nDigite o número do cliente (com DDD).\n\n_(Para abortar, diga 'cancelar')_");
+            } else {
+                whatsAppService.sendTextMessage(phoneNumber, "Fala, Chefe! 💈 O que vamos fazer hoje?\n\n*1* 📊 Status\n*2* 📢 Disparar Mensagem\n*3* ⏸️ Pausar cliente\n*4* ▶️ Retomar cliente\n\n_(Diga *comandos* para o manual)_");
+            }
         }
+    }
+
+    private void sendFullMenu(String phoneNumber) {
+        String fullMenu = """
+                🛠️ *PAINEL CENTRAL - BARBERBOT*
+                
+                *Ações Interativas (Digite o Número ou Fale o Comando):*
+                *1* - 📊 Status e Resumo
+                *2* - 📢 Avisar Todos
+                *3* - ⏸️ Pausar bot para um cliente
+                *4* - ▶️ Retomar bot para um cliente
+                
+                *Atalhos Rápidos:*
+                📸 *Foto da Agenda:* Mande um print da agenda para programar lembretes.
+                🎤 *Áudio:* O Bot entende comandos de voz! Diga "Avisar" e depois grave o seu recado.
+                """;
+        whatsAppService.sendTextMessage(phoneNumber, fullMenu);
     }
     
     @Async
     public void performBroadcast(String adminPhone, String message) {
         List<Customer> allCustomers = customerRepository.findAll();
-        int total = allCustomers.size();
+        whatsAppService.sendTextMessage(adminPhone, "🚀 Preparando disparo para " + allCustomers.size() + " clientes...");
         int sent = 0;
-        
-        whatsAppService.sendTextMessage(adminPhone, "🚀 Iniciando disparo para " + total + " clientes cadastrados...");
-        
         for (Customer customer : allCustomers) {
             try {
-                if (customer.getPhoneNumber().contains(adminPhone) || adminPhone.contains(customer.getPhoneNumber())) {
-                    continue;
-                }
-                String personalizedMessage = "📢 *Aviso LH Barbearia*\n\n" + message;
-                whatsAppService.sendTextMessage(customer.getPhoneNumber(), personalizedMessage);
+                if (customer.getPhoneNumber().contains(adminPhone)) continue;
+                whatsAppService.sendTextMessage(customer.getPhoneNumber(), "📢 *Aviso LH Barbearia*\n\n" + message);
                 sent++;
                 Thread.sleep(2000); 
-            } catch (Exception e) {
-                log.error("Falha ao enviar broadcast para {}", customer.getPhoneNumber());
-            }
+            } catch (Exception e) {}
         }
-        whatsAppService.sendTextMessage(adminPhone, "✅ Disparo finalizado! Enviado com sucesso para " + sent + " clientes.");
+        whatsAppService.sendTextMessage(adminPhone, "✅ Broadcast finalizado! Mensagem enviada para " + sent + " clientes.");
     }
     
-    private void processCustomerMessage(EvolutionWebhookDTO webhook) {
-        String phoneNumber = webhook.getPhoneNumber();
-        String messageText = webhook.getMessageText();
+    private void processCustomerMessage(EvolutionWebhookDTO webhook, String phoneNumber) {
         String pushName = webhook.getData() != null ? webhook.getData().getPushName() : null;
-        String contentToSave = messageText != null ? messageText : "[Mídia]";
         String messageId = webhook.getData().getKey().getId();
+        
+        String contentToSave = webhook.getMessageText();
+        
+        if (webhook.hasAudio()) {
+            String base64 = webhook.getBase64() != null ? webhook.getBase64() : fetchBase64FromEvolution(webhook.getData().getKey().getId());
+            if (base64 != null) {
+                contentToSave = openAIService.transcribeAudio(base64, webhook.getMimeType());
+            } else {
+                contentToSave = "[Áudio]";
+            }
+        } else if (contentToSave == null) {
+            contentToSave = "[Mídia]";
+        }
 
         Customer customer = customerService.findOrCreateCustomer(phoneNumber, pushName);
+        boolean isFirstMessage = getRecentHistory(customer.getId()).isEmpty();
 
-        interactionRepository.save(Interaction.builder()
-                .customer(customer).type(Interaction.InteractionType.USER)
-                .content(contentToSave).messageId(messageId).build());
+        interactionRepository.save(Interaction.builder().customer(customer).type(Interaction.InteractionType.USER).content(contentToSave).messageId(messageId).build());
 
         String menuOptionId = MenuOptions.resolveMenuOptionId(contentToSave);
         if (menuOptionId != null) {
             String response = MenuOptions.getResponseForOption(menuOptionId, properties);
-            response += "\n\n_(Clique em *Ver Opções* para voltar)_";
+            if (menuOptionId.equals(MenuOptions.ROW_ID_ATENDENTE)) {
+                customerService.pauseCustomer(phoneNumber, 60);
+            } else {
+                response += "\n\n_(Clique em *Ver Opções* para voltar)_";
+            }
             saveAndSend(customer, response, phoneNumber);
             return;
         }
@@ -311,29 +276,23 @@ public class OrchestratorService {
             return;
         }
 
-        List<String> recentHistory = getRecentHistory(customer.getId());
-        String aiResponse = openAIService.processCustomerMessage(
-                messageText != null ? messageText : "Olá",
-                recentHistory
-        );
-
-        saveAndSend(customer, aiResponse, phoneNumber);
-
-        if (aiResponse != null && (aiResponse.toLowerCase().contains("menu") || 
-                                   aiResponse.contains("opções") || 
-                                   aiResponse.contains("opcoes"))) {
+        if (isFirstMessage || contentToSave.toLowerCase().matches("^(oi|olá|ola|bom dia|boa tarde|boa noite).*")) {
+            String firstName = pushName != null ? pushName.split(" ")[0] : "amigo(a)";
+            saveAndSend(customer, "Olá, " + firstName + "! 👋 Bem-vindo(a) à *LH Barbearia*!\nSempre que quiser ver opções, digite *MENU*.", phoneNumber);
             sleep(1000);
             sendInteractiveMenu(customer, phoneNumber);
+            return;
         }
+
+        String aiResponse = openAIService.processCustomerMessage(contentToSave, getRecentHistory(customer.getId()));
+        saveAndSend(customer, aiResponse, phoneNumber);
     }
 
     private void sendInteractiveMenu(Customer customer, String phone) {
         try {
             whatsAppService.sendListMessage(phone, "💈 Menu LH Barbearia", "Escolha uma opção 👇", "Ver Opções", "LH Barbearia", MenuOptions.buildListSections());
-            interactionRepository.save(Interaction.builder().customer(customer).type(Interaction.InteractionType.BOT).content("[Menu Interativo]").build());
         } catch (Exception e) {
-            String textMenu = MenuOptions.getMenuAsText();
-            saveAndSend(customer, textMenu, phone);
+            saveAndSend(customer, MenuOptions.getMenuAsText(), phone);
         }
     }
 
@@ -343,12 +302,11 @@ public class OrchestratorService {
     }
     
     private void sleep(long millis) {
-        try { Thread.sleep(millis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        try { Thread.sleep(millis); } catch (InterruptedException e) {}
     }
     
     private List<String> getRecentHistory(java.util.UUID customerId) {
         return interactionRepository.findRecentInteractionsByCustomerId(customerId).stream()
-                .map(Interaction::getContent)
-                .collect(Collectors.toList());
+                .map(Interaction::getContent).collect(Collectors.toList());
     }
 }

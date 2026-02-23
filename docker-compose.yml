@@ -4,16 +4,17 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: barberbot-postgres
+    restart: always
     environment:
-      POSTGRES_DB: barberbot_db
-      POSTGRES_USER: barberbot_user
-      POSTGRES_PASSWORD: barberbot_pass
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U barberbot_user"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,45 +22,35 @@ services:
   evolution-api:
     image: evoapicloud/evolution-api:v2.3.7
     container_name: barberbot-evolution-api
+    restart: always
     environment:
       SERVER_URL: http://localhost:8080
       PORT: 8080
-      # Configuração do Banco de Dados (obrigatório na v2)
-      DATABASE_ENABLED: true
+
+      # Banco de Dados
+      DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://barberbot_user:barberbot_pass@postgres:5432/barberbot_db?schema=evolution
-      # Configuração da Sessão
-      CONFIG_SESSION_PHONE_CLIENT: Evolution API
-      CONFIG_SESSION_PHONE_NAME: BarberBot
-      # API Key Global - Use esta chave no login do manager
-      AUTHENTICATION_API_KEY: "barberbot"
-      # Cache local (sem Redis) - evita "count: 0" e problemas com QR Code
+      DATABASE_CONNECTION_URI: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=evolution"
+
+      # Sessão
+      CONFIG_SESSION_PHONE_CLIENT: "Evolution API"
+      CONFIG_SESSION_PHONE_NAME: "BarberBot"
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       CACHE_REDIS_ENABLED: "false"
       CACHE_LOCAL_ENABLED: "true"
-      # Configuração de Webhook
-      WEBHOOK_GLOBAL_ENABLED: true
-      WEBHOOK_GLOBAL_URL: http://host.docker.internal:8081/api/webhook
-      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: false
-      WEBHOOK_EVENTS_APPLICATION_STARTUP: true
-      WEBHOOK_EVENTS_QRCODE_UPDATED: true
-      WEBHOOK_EVENTS_MESSAGES_UPSERT: true
-      WEBHOOK_EVENTS_MESSAGES_UPDATE: true
-      WEBHOOK_EVENTS_MESSAGES_DELETE: true
-      WEBHOOK_EVENTS_SEND_MESSAGE: true
-      WEBHOOK_EVENTS_CONTACTS_UPDATE: true
-      WEBHOOK_EVENTS_CONTACTS_UPSERT: true
-      WEBHOOK_EVENTS_PRESENCE_UPDATE: true
-      WEBHOOK_EVENTS_CHATS_UPDATE: true
-      WEBHOOK_EVENTS_CHATS_UPSERT: true
-      WEBHOOK_EVENTS_CHATS_DELETE: true
-      WEBHOOK_EVENTS_GROUPS_UPSERT: true
-      WEBHOOK_EVENTS_GROUPS_UPDATE: true
-      WEBHOOK_EVENTS_GROUPS_DELETE: true
-      WEBHOOK_EVENTS_GROUP_UPDATE: true
-      WEBHOOK_EVENTS_GROUP_PARTICIPANTS_UPDATE: true
-      WEBHOOK_EVENTS_CONNECTION_UPDATE: true
-      WEBHOOK_EVENTS_CALL_UPSERT: true
-      WEBHOOK_EVENTS_CALL_UPDATE: true
+
+      # --- WEBHOOKS OTIMIZADOS E COM BASE64 ---
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_URL: "http://host.docker.internal:8081/api/webhook"
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+      WEBHOOK_GLOBAL_BASE64: "true" # <-- A MÁGICA ESTÁ AQUI
+
+      # Habilitamos APENAS o necessário para o bot não travar
+      WEBHOOK_EVENTS_APPLICATION_STARTUP: "false"
+      WEBHOOK_EVENTS_QRCODE_UPDATED: "true"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
+
     ports:
       - "8080:8080"
     depends_on:
@@ -67,6 +58,5 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-volumes:
-  postgres_data:
+    volumes:
+      - ./evolution_store:/evolution/store # <-- ISSO IMPEDE O QR CODE DE DESCONECTAR SOZINHO

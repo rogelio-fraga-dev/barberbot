@@ -28,10 +28,10 @@ server:
 # Configurações do Bot - LH Barbearia
 barberbot:
   admin:
-    phone: "34984141504"
+    phone: "${ADMIN_PHONE}"
   evolution:
     base-url: "http://localhost:8080"
-    instance-name: "BarberBot"
+    instance-name: "BarberBotOficial"
     api-key: "${EVOLUTION_API_KEY:barberbot}"
   openai:
     api-key: "${OPENAI_API_KEY}"

@@ -10,12 +10,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -28,6 +25,7 @@ public class OpenAIService {
     private final OpenAiChatModel chatModel;
     private final BarberBotProperties properties;
     private WebClient openAiWebClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final String SYSTEM_PROMPT_RECEPTIONIST = """
             Você é o assistente virtual oficial da **LH Barbearia** em Araguari, MG.
@@ -35,117 +33,72 @@ public class OpenAIService {
             
             📋 **Informações da Barbearia:**
             - **Endereço:** R. Floriano Peixoto, 585 - Miranda, Araguari.
-            - **Horário de Funcionamento:** Segunda a Sábado, das 09:00 às 20:00.
-            - **Almoço:** Fechado das 12:00 às 14:00.
-            - **Seu Horário (Bot):** Você atende 24 horas por dia para tirar dúvidas e mandar links.
+            - **Horário:** Seg a Sáb, 09:00 às 20:00 (Almoço 12:00 às 14:00).
             
             ⚙️ **Regras de Atendimento:**
-            1. Seja breve. Respostas curtas funcionam melhor no WhatsApp.
-            2. Se o cliente quiser agendar, SEMPRE mande o link do CashBarber ou peça para digitar "4".
-            3. Se perguntarem preço, dê um exemplo (ex: Corte a partir de R$35) e peça para digitar "2" para ver a tabela completa com Planos VIP.
-            4. Se for algo complexo que você não sabe, peça para digitar "5" (Falar com Luiz).
-            5. Nunca invente preços que não estão na sua base.
-            
-            💬 **Estilo de Fala:**
-            Profissional mas acessível. Use emojis com moderação (✂️, 💈, 🔥).
-            
-            Opções do Menu (sugira se o cliente estiver perdido):
-            1. Endereço
-            2. Preços/Serviços
-            3. Produtos
-            4. Agendar
-            5. Falar com Luiz
-            6. Instagram
+            1. Seja breve.
+            2. Se quiserem agendar, peça para digitar "4" ou mande o link do CashBarber.
+            3. Para preços, peça para digitar "2".
             """;
     
     private static final String SYSTEM_PROMPT_AGENDA_READER = """
             Você é um assistente especializado em ler prints de sistemas de agendamento (CashBarber).
-            
             Sua tarefa: Analisar a imagem e extrair os agendamentos.
-            Retorne APENAS um JSON válido (sem markdown, sem ```json) no formato:
-            {
-              "items": [
-                {
-                  "name": "Nome do Cliente",
-                  "phone": "5534999999999",
-                  "time": "14:30",
-                  "service": "Corte"
-                }
-              ]
-            }
-            
-            Regras Críticas:
-            1. Extraia o telefone apenas com números. Se não tiver DDI (55), adicione se for Brasil.
-            2. Se o telefone não estiver visível, deixe vazio ou tente inferir.
-            3. Horário deve ser HH:mm.
+            Retorne APENAS um JSON válido (sem markdown) no formato:
+            {"items": [{"name": "Nome", "phone": "5534999999999", "time": "14:30", "service": "Corte"}]}
             """;
     
-    /**
-     * Chat com Cliente (Texto)
-     */
     public String processCustomerMessage(String userMessage, List<String> recentHistory) {
         try {
             List<ChatMessage> messages = new ArrayList<>();
             messages.add(SystemMessage.from(SYSTEM_PROMPT_RECEPTIONIST));
-            
             if (recentHistory != null) {
                 for (int i = 0; i < recentHistory.size(); i++) {
                     if (i % 2 == 0) messages.add(UserMessage.from(recentHistory.get(i)));
                     else messages.add(AiMessage.from(recentHistory.get(i)));
                 }
             }
-            
             messages.add(UserMessage.from(userMessage));
             return chatModel.generate(messages).content().text();
-            
         } catch (Exception e) {
-            log.error("Erro no Chat IA: {}", e.getMessage(), e);
-            return "Desculpe, estou terminando um corte aqui! Pode tentar novamente em instantes?";
+            log.error("Erro Chat: {}", e.getMessage());
+            return "Estou terminando um corte aqui! Pode repetir?";
         }
     }
     
-    /**
-     * Visão Computacional: Ler Agenda
-     */
-    public String extractAgendaFromImage(String imageUrl) {
+    public String extractAgendaFromImage(String base64Image, String mimeType) {
         try {
-            log.info("Baixando imagem da agenda: {}", imageUrl);
-            String base64Image = downloadUrlAsBase64(imageUrl);
+            String pureBase64 = base64Image.contains(",") ? base64Image.split(",")[1] : base64Image;
+            String cleanMime = (mimeType != null && mimeType.contains("image/")) ? mimeType.split(";")[0] : "image/jpeg";
             
             UserMessage userMessage = UserMessage.from(
-                TextContent.from("Analise esta imagem e extraia os agendamentos em JSON."),
-                ImageContent.from(base64Image, "image/jpeg")
+                TextContent.from("Extraia os agendamentos desta imagem para JSON."),
+                ImageContent.from(pureBase64, cleanMime) 
             );
-            
             SystemMessage systemMessage = SystemMessage.from(SYSTEM_PROMPT_AGENDA_READER);
-            
-            log.info("Enviando imagem para GPT-4o Vision...");
             String response = chatModel.generate(systemMessage, userMessage).content().text();
-            
             return response.replace("```json", "").replace("```", "").trim();
-                
         } catch (Exception e) {
-            log.error("Erro ao processar imagem de agenda: {}", e.getMessage(), e);
-            throw new RuntimeException("Falha ao ler imagem da agenda. Verifique se está legível.", e);
+            log.error("Erro Visão: {}", e.getMessage());
+            throw new RuntimeException("Falha ao ler imagem.", e);
         }
     }
     
-    /**
-     * Audição: Transcrever Áudio (Whisper via HTTP Raw)
-     */
-    public String transcribeAudio(String audioUrl) {
+    public String transcribeAudio(String base64Audio, String mimeType) {
         try {
-            log.info("Baixando áudio para transcrição: {}", audioUrl);
-            byte[] audioBytes = downloadUrlBytes(audioUrl);
+            String pureBase64 = base64Audio.contains(",") ? base64Audio.split(",")[1] : base64Audio;
+            byte[] audioBytes = Base64.getDecoder().decode(pureBase64);
             
-            log.info("Enviando áudio ({} bytes) para Whisper API...", audioBytes.length);
+            String extension = "ogg"; 
+            if (mimeType != null) {
+                if (mimeType.contains("mp4")) extension = "mp4";
+                else if (mimeType.contains("mpeg") || mimeType.contains("mp3")) extension = "mp3";
+            }
+            final String filename = "audio." + extension;
             
             MultipartBodyBuilder builder = new MultipartBodyBuilder();
             builder.part("file", new ByteArrayResource(audioBytes) {
-                @Override
-                public String getFilename() {
-                    return "audio.mp3";
-                }
+                @Override public String getFilename() { return filename; }
             });
             builder.part("model", "whisper-1");
 
@@ -158,47 +111,27 @@ public class OpenAIService {
                     .bodyToMono(String.class)
                     .block();
             
-            if (jsonResponse != null && jsonResponse.contains("\"text\":")) {
-                int start = jsonResponse.indexOf("\"text\":") + 8;
-                String text = jsonResponse.substring(start);
-                text = text.substring(0, text.lastIndexOf("\""));
-                if (text.startsWith("\"")) text = text.substring(1);
-                return text.replace("\\n", "\n").replace("\\\"", "\"");
+            // Leitura Limpa e Oficial do JSON
+            if (jsonResponse != null) {
+                JsonNode root = objectMapper.readTree(jsonResponse);
+                if (root.has("text")) {
+                    return root.get("text").asText().trim();
+                }
             }
-            
             return jsonResponse;
-
         } catch (Exception e) {
-            log.error("Erro ao transcrever áudio: {}", e.getMessage(), e);
-            return "[Erro ao ouvir áudio]";
+            log.error("Erro Áudio: {}", e.getMessage());
+            return "[Erro na transcrição do áudio]";
         }
     }
 
     private WebClient getOpenAiWebClient() {
         if (openAiWebClient == null) {
             openAiWebClient = WebClient.builder()
-                    .baseUrl("[https://api.openai.com/v1](https://api.openai.com/v1)")
+                    .baseUrl("https://api.openai.com/v1")
                     .defaultHeader("Authorization", "Bearer " + properties.getOpenai().getApiKey())
                     .build();
         }
         return openAiWebClient;
-    }
-    
-    private String downloadUrlAsBase64(String urlString) throws IOException {
-        byte[] bytes = downloadUrlBytes(urlString);
-        return Base64.getEncoder().encodeToString(bytes);
-    }
-    
-    private byte[] downloadUrlBytes(String urlString) throws IOException {
-        URL url = new URL(urlString);
-        try (InputStream in = new BufferedInputStream(url.openStream());
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[1024];
-            int n;
-            while (-1 != (n = in.read(buffer))) {
-                out.write(buffer, 0, n);
-            }
-            return out.toByteArray();
-        }
     }
 }
