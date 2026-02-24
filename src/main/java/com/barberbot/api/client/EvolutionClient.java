@@ -16,6 +16,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@SuppressWarnings("null")
 public class EvolutionClient {
 
     private final WebClient webClient;

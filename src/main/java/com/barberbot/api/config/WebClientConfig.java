@@ -8,6 +8,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
 @RequiredArgsConstructor
+@SuppressWarnings("null")
 public class WebClientConfig {
     
     private final BarberBotProperties properties;
